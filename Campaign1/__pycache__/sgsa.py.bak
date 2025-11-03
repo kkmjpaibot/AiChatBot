@@ -1,0 +1,912 @@
+import time
+import json
+import asyncio
+import logging
+from typing import Dict, Any, Optional, List
+from fastapi import WebSocket
+from fastapi.websockets import WebSocketDisconnect
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+def format_currency(amount):
+    return f"RM {amount:,.2f}"
+
+def calculate_premium_estimation(annual_income, years_of_coverage, age):
+    """
+    Calculate insurance premium estimation based on annual income, years of coverage, and age.
+    
+    Args:
+        annual_income (float): Annual income in RM
+        years_of_coverage (int): Number of years for coverage
+        age (int): Current age of the applicant
+        
+    Returns:
+        dict: Dictionary containing premium details
+    """
+    # Calculate recommended coverage (10x annual income)
+    recommended_coverage = annual_income * 10
+    
+    # Determine premium rate based on age
+    if age <= 30:
+        premium_rate_per_thousand = 1.20
+    elif age <= 40:
+        premium_rate_per_thousand = 1.70
+    elif age <= 50:
+        premium_rate_per_thousand = 2.80
+    else:
+        premium_rate_per_thousand = 4.50
+    
+    # Calculate annual premium
+    units_of_coverage = recommended_coverage / 1000
+    estimated_annual_premium = units_of_coverage * premium_rate_per_thousand
+    
+    # Calculate monthly premium
+    estimated_monthly_premium = estimated_annual_premium / 12
+    
+    # Ensure premium is not too low (minimum premium)
+    estimated_annual_premium = max(estimated_annual_premium, 100)  # Minimum RM100 annual premium
+    estimated_monthly_premium = estimated_annual_premium / 12
+    
+    return {
+        'recommended_coverage': recommended_coverage,
+        'annual_premium': round(estimated_annual_premium, 2),
+        'monthly_premium': round(estimated_monthly_premium, 2),
+        'premium_rate_per_thousand': premium_rate_per_thousand,
+        'age': age,
+        'years_of_coverage': years_of_coverage,
+        'annual_income': annual_income
+    }
+
+class SatuGajiSatuHarapan:
+    """Main handler for Satu Gaji Satu Harapan campaign."""
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if not self.initialized:
+            self.states = {}  # user_id -> user_data
+            self.last_active = {}
+            self.name = "Satu Gaji Satu Harapan"
+            self.description = "Income protection and financial security plan"
+            self.initialized = True
+    
+    def get_state(self, user_id: str) -> Dict[str, Any]:
+        """Get or create state for a user."""
+        if user_id not in self.states:
+            self.states[user_id] = {
+                "current_step": "welcome",
+                "data": {}
+            }
+        return self.states[user_id]
+    
+    async def type_effect(self, text: str, ws=None, delay: float = 0.03) -> None:
+        """Display text with typing effect or send through WebSocket."""
+        try:
+            if ws:
+                print(f"[DEBUG] Sending message to WebSocket: {text[:100]}...")  # Log first 100 chars
+                message = json.dumps({"type": "message", "content": text, "is_user": False})
+                print(f"[DEBUG] JSON message: {message}")
+                await ws.send_text(message)
+                print("[DEBUG] Message sent successfully")
+                await asyncio.sleep(delay * len(text) * 0.1)
+            else:
+                print(f"[DEBUG] Console output: {text[:100]}...")  # Log first 100 chars
+                for char in text:
+                    try:
+                        print(char, end='', flush=True)
+                        time.sleep(delay)
+                    except (UnicodeEncodeError, Exception) as e:
+                        print(f"[WARNING] Error printing character: {e}")
+                        print(' ', end='', flush=True)
+                print()
+        except Exception as e:
+            print(f"[ERROR] Error in type_effect: {str(e)}")
+            if ws:
+                print(f"[DEBUG] WebSocket state: open={not ws.client_state == 3}")
+    
+    async def get_user_input(self, prompt: str, valid_responses: Optional[list] = None, ws=None):
+        """Get user input with validation."""
+        if ws:
+            # WebSocket mode
+            await self.type_effect(prompt, ws)
+            while True:
+                try:
+                    data = await ws.receive_text()
+                    try:
+                        message = json.loads(data)
+                        if isinstance(message, dict) and "content" in message:
+                            user_input = str(message["content"]).strip()
+                        else:
+                            user_input = str(message).strip()
+                        
+                        if not valid_responses or user_input.lower() in [str(r).lower() for r in valid_responses]:
+                            return user_input
+                        
+                        if valid_responses is not None:
+                            await self.type_effect(
+                                f"Please respond with one of: {', '.join(str(r) for r in valid_responses)}",
+                                ws
+                            )
+                    except json.JSONDecodeError:
+                        user_input = data.strip()
+                        if not valid_responses or user_input.lower() in [str(r).lower() for r in valid_responses]:
+                            return user_input
+                except Exception as e:
+                    logger.error(f"Error getting user input: {e}")
+                    await self.type_effect("Sorry, I had trouble understanding that. Could you please try again?", ws)
+        else:
+            # Console mode
+            while True:
+                try:
+                    user_input = input(prompt).strip()
+                    if not valid_responses or user_input.lower() in [str(r).lower() for r in valid_responses]:
+                        return user_input
+                    print(f"Please respond with one of: {', '.join(str(r) for r in valid_responses)}")
+                except (EOFError, KeyboardInterrupt):
+                    print("\nExiting...")
+                    exit(1)
+    
+    def get_benefits(self):
+        """Return the list of benefits for this campaign."""
+        return [
+            {
+                "title": "INCOME REPLACEMENT",
+                "description": "Financial security for your family with a lump sum payment.",
+                "points": [
+                    "Maintains family's living standards",
+                    "Covers daily expenses and bills",
+                    "Financial cushion during tough times"
+                ]
+            },
+            {
+                "title": "HOME & EDUCATION",
+                "description": "Protects your family's home and children's future.",
+                "points": [
+                    "Helps with mortgage payments",
+                    "Secures education funds",
+                    "Avoids financial hardship"
+                ]
+            },
+            {
+                "title": "PEACE OF MIND",
+                "description": "Security for your family's future.",
+                "points": [
+                    "Family protection",
+                    "Financial safety net",
+                    "Stability when it matters most"
+                ]
+            }
+        ]
+
+    async def show_benefits(self, ws):
+        """Display the benefits to the user with proper WebSocket formatting."""
+        try:
+            logger.info("[DEBUG] Entering show_benefits method")
+            
+            # Get the benefits content
+            benefits = self.get_benefits()
+            logger.info(f"[DEBUG] Retrieved {len(benefits)} benefit items")
+            
+            # Format the benefits message
+            benefits_content = "✨ *Satu Gaji Satu Harapan Benefits* ✨\n\nHere's what you'll get with our income protection plan:"
+            for benefit in benefits:
+                benefit_msg = f"\n\n*{benefit['title']}*\n{benefit['description']}\n"
+                for point in benefit['points']:
+                    benefit_msg += f"• {point}\n"
+                benefits_content += benefit_msg
+            
+            # Create the response with buttons
+            response = {
+                "type": "buttons",
+                "content": benefits_content,
+                "buttons": [
+                    {"label": "✅ Yes, show me", "value": "yes"},
+                    {"label": "❌ No, thanks", "value": "no"}
+                ]
+            }
+            
+            logger.info("[DEBUG] Prepared benefits message with buttons")
+            
+            if ws:
+                logger.info("[DEBUG] Sending benefits message to WebSocket")
+                logger.debug(f"[DEBUG] Message content: {response}")
+                
+                try:
+                    await ws.send_json(response)
+                    logger.info("[DEBUG] Benefits message sent successfully")
+                    return True
+                except Exception as send_error:
+                    logger.error(f"[ERROR] Failed to send WebSocket message: {str(send_error)}", exc_info=True)
+                    return False
+            else:
+                logger.warning("[WARNING] No WebSocket connection available to send benefits message")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[ERROR] Error in show_benefits: {str(e)}", exc_info=True)
+            logger.error(f"Error in show_benefits: {str(e)}", exc_info=True)
+            error_msg = "I encountered an error showing the benefits. Please try again."
+            if ws:
+                await ws.send_text(json.dumps({
+                    "type": "message",
+                    "content": error_msg,
+                    "is_user": False
+                }))
+            return False
+            return False
+
+    async def start_premium_estimation(self, ws):
+        """Start the premium estimation process."""
+        try:
+            await self.type_effect("\nLet's get started with your premium estimation. I'll need a few details from you.", ws)
+            await asyncio.sleep(0.5)
+            
+            return {
+                "response": "What is your annual income? (e.g., RM50,000 or 50000)",
+                "next_step": "get_annual_income"
+            }
+        except Exception as e:
+            logger.error(f"Error in start_premium_estimation: {str(e)}", exc_info=True)
+            return {
+                "response": "I encountered an error starting the premium estimation. Please try again.",
+                "next_step": "error"
+            }
+    
+    async def start(self, ws, user_id: str):
+        """Start the campaign flow for a user."""
+        try:
+            logger.info(f"[SGSA] Starting campaign for user {user_id}")
+            
+            # Initialize user state
+            state = self.get_state(user_id)
+            state["current_step"] = "welcome"
+            state["data"] = {}
+            
+            # Get welcome message
+            welcome_msg = self.get_welcome_message()
+            logger.info(f"[SGSA] Welcome message: {welcome_msg[:100]}...")
+            
+            # Prepare buttons
+            question = "Would you like to know more about this plan?"
+            buttons = [
+                {"label": "✅ Yes, tell me more", "value": "yes"},
+                {"label": "❌ No, thanks", "value": "no"}
+            ]
+            logger.info(f"[SGSA] Buttons prepared: {buttons}")
+            
+            response_data = {
+                "type": "buttons",
+                "content": welcome_msg + "\n\n" + question,
+                "buttons": buttons,
+                "is_user": False,
+                "campaign": "sgsa"  # Add campaign identifier
+            }
+            
+            if ws:
+                logger.info("[SGSA] Sending WebSocket message...")
+                try:
+                    await ws.send_json(response_data)
+                    logger.info("[SGSA] WebSocket message sent successfully")
+                except Exception as e:
+                    logger.error(f"[SGSA] Error sending WebSocket message: {str(e)}", exc_info=True)
+            
+            # Prepare the return value
+            return_data = {
+                "type": "buttons",
+                "content": welcome_msg + "\n\n" + question,
+                "text": welcome_msg + "\n\n" + question,  # Add text field for backward compatibility
+                "buttons": buttons,
+                "campaign_data": state["data"],
+                "waiting_for_response": True,
+                "next_step": "show_welcome"
+            }
+        except Exception as e:
+            logger.error(f"Error in start method: {e}", exc_info=True)
+            return {
+                "response": "An error occurred while starting the campaign. Please try again.",
+                "completed": False,
+                "error": str(e)
+            }
+
+    async def process_message(self, user_id: str, message: str, ws=None) -> Dict[str, Any]:
+        """Process incoming message and return response."""
+        state = self.get_state(user_id)
+        current_step = state.get("current_step", "welcome")
+        
+        # Enhanced debug logging
+        logger.info(f"[DEBUG] === NEW MESSAGE ===")
+        logger.info(f"[DEBUG] User ID: {user_id}")
+        logger.info(f"[DEBUG] Current step: {current_step}")
+        logger.info(f"[DEBUG] Message received: {message}")
+        logger.info(f"[DEBUG] Message type: {type(message)}")
+        if isinstance(message, dict):
+            logger.info(f"[DEBUG] Message keys: {list(message.keys())}")
+        logger.info(f"[DEBUG] Current state: {state}")
+        
+        # Handle special commands
+        if isinstance(message, dict) and 'value' in message:
+            # Handle button click responses
+            message = message['value']
+        elif isinstance(message, str) and message.lower() == "restart":
+            self.states[user_id] = {"current_step": "welcome", "data": {}}
+            state = self.get_state(user_id)
+            return {"response": "Session has been restarted. " + self.get_welcome_message(), 
+                   "campaign_data": state["data"], 
+                   "completed": False}
+        elif message == "start":
+            # Handle initial start message
+            welcome_msg = self.get_welcome_message()
+            state["current_step"] = "welcome"
+            state["welcome_shown"] = False
+            return {
+                "response": welcome_msg,
+                "campaign_data": state["data"],
+                "waiting_for_response": True,
+                "next_step": "process_welcome_response"
+            }
+        
+        # Handle different steps
+        if current_step in ["welcome", "show_welcome", "process_welcome_response"]:
+            logger.info(f"[DEBUG] Handling welcome step. Current step: {current_step}, Welcome shown: {state.get('welcome_shown', False)}")
+            
+            # If this is the first time showing welcome, show the message and wait for response
+            if not state.get('welcome_shown', False):
+                logger.info("[DEBUG] Showing welcome message for the first time")
+                state['welcome_shown'] = True
+                welcome_msg = self.get_welcome_message()
+                response = {
+                    "response": welcome_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True,
+                    "next_step": "process_welcome_response"
+                }
+                logger.info(f"[DEBUG] Returning welcome message response: {response}")
+                return response
+            
+            # Process the user's response to the welcome message
+            logger.info(f"[DEBUG] Processing welcome response: '{message}'")            
+            if message.lower().strip() in ['', 'yes', 'y', 'ya', 'yeah', 'tell me more']:
+                logger.info("[DEBUG] User wants to see benefits, showing benefits...")
+                try:
+                    # Show benefits with buttons
+                    benefits_shown = await self.show_benefits(ws)
+                    
+                    if benefits_shown:
+                        logger.info("[DEBUG] Benefits shown successfully")
+                        state["current_step"] = "awaiting_premium_decision"
+                        return {
+                            "response": "",  # Empty response since we already sent the message in show_benefits
+                            "campaign_data": state["data"],
+                            "waiting_for_response": True,
+                            "next_step": "awaiting_premium_decision"
+                        }
+                    else:
+                        error_msg = "Sorry, I encountered an error showing the benefits. Please try again."
+                        logger.error("[ERROR] Failed to show benefits")
+                        return {
+                            "response": error_msg,
+                            "campaign_data": state["data"],
+                            "waiting_for_response": False
+                        }
+                except Exception as e:
+                    error_msg = f"Error showing benefits: {str(e)}"
+                    logger.error(f"[ERROR] {error_msg}", exc_info=True)
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": False
+                    }
+            else:
+                # If user doesn't want to see benefits, skip to the end
+                state["current_step"] = "complete"
+                return {
+                    "response": "Thank you for your interest in Satu Gaji Satu Harapan. If you have any questions, feel free to ask!",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+            
+        elif current_step == "awaiting_premium_decision":
+            # Handle user's response to premium estimation question
+            if message.lower() in ('yes', 'y', 'ya', 'yeah', 'yes, show me'):
+                # Start the premium estimation process
+                estimation_start = await self.start_premium_estimation(ws)
+                if estimation_start and "response" in estimation_start:
+                    # Update the next step from the estimation_start response
+                    next_step = estimation_start.get("next_step", "get_annual_income")
+                    state["current_step"] = next_step
+                    
+                    # Send the response through WebSocket if available
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": estimation_start["response"],
+                            "is_user": False
+                        }))
+                    
+                    return {
+                        "response": estimation_start["response"],
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True,
+                        "next_step": next_step
+                    }
+                else:
+                    error_msg = "I'm having trouble starting the premium estimation. Please try again."
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": error_msg,
+                            "is_user": False
+                        }))
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+            elif message.lower() in ('no', 'n', 'no thanks', 'skip'):
+                state["current_step"] = "complete"
+                return {
+                    "response": "Thank you for your interest in Satu Gaji Satu Harapan. If you have any questions, feel free to ask!",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+            else:
+                # Show the premium estimation question again with buttons if using WebSocket
+                if ws:
+                    question = "Would you like to get a ROUGH ESTIMATION of the premium you might pay?\n\nRemember, this is ONLY AN ESTIMATION. The actual premium will vary based on your health and other factors."
+                    buttons = [
+                        {"label": "✅ Yes, show me", "value": "yes"},
+                        {"label": "❌ No, thanks", "value": "no"}
+                    ]
+                    await ws.send_text(json.dumps({
+                        "type": "buttons",
+                        "content": "I'm not sure I understand. " + question,
+                        "buttons": buttons
+                    }))
+                    return {
+                        "response": "",
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                else:
+                    return {
+                        "response": "I'm not sure I understand. Please respond with 'yes' to get a premium estimation or 'no' to finish.",
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                
+        elif current_step == "premium_estimation":
+            # This is now a fallback state in case we need it
+            state["current_step"] = "awaiting_premium_decision"
+            return await self.process_message(user_id, message, ws)
+                
+        elif current_step == "get_annual_income":
+            try:
+                # Clean and validate income input
+                cleaned_input = str(message).strip().lower().replace('rm', '').replace(' ', '').replace(',', '')
+                
+                try:
+                    annual_income = float(cleaned_input)
+                    if annual_income <= 0:
+                        raise ValueError("Income must be greater than 0")
+                    
+                    state["data"]["annual_income"] = annual_income
+                    state["current_step"] = "get_age"
+                    
+                    # Log the state for debugging
+                    logger.info(f"Processed annual income: {annual_income}")
+                    
+                    # Send the response through WebSocket if available
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": "Great! Now, please enter your current age (18-70):",
+                            "is_user": False
+                        }))
+                    
+                    return {
+                        "response": "Great! Now, please enter your current age (18-70):",
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True,
+                        "next_step": "get_age"
+                    }
+                    
+                except ValueError as e:
+                    error_msg = "Please enter a valid income amount (e.g., 50000 or RM50,000):"
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": error_msg,
+                            "is_user": False
+                        }))
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                        
+            except Exception as e:
+                error_msg = "An error occurred while processing your income. Please try again."
+                logger.error(f"Error in get_annual_income: {str(e)}", exc_info=True)
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": error_msg,
+                        "is_user": False
+                    }))
+                return {
+                    "response": error_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True
+                }
+
+        elif current_step == "get_age":
+            try:
+                # Ensure message is a string
+                message_str = str(message).strip()
+                logger.info(f"Processing age input: {message_str}")
+                
+                # Extract number from input
+                word_to_num = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+                    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+                    'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70
+                }
+                
+                age = None
+                message_lower = message_str.lower()
+                
+                # Check for word numbers first
+                for word, num in word_to_num.items():
+                    if word in message_lower:
+                        age = num
+                        break
+                
+                # If no word number found, try to extract digits
+                if age is None:
+                    import re
+                    digits = re.search(r'\d+', message_str)
+                    if digits:
+                        age = int(digits.group())
+                    else:
+                        raise ValueError("No valid number found in age input")
+                
+                # Validate range
+                if age < 18 or age > 70:
+                    error_msg = "Please enter an age between 18 and 70."
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": error_msg,
+                            "is_user": False
+                        }))
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                
+                # Store age and move to next step
+                state["data"]["age"] = age
+                state["current_step"] = "get_years_coverage"
+                
+                # Prepare next question
+                next_question = "How many years of coverage would you like? (e.g., 10, 20, or 30 years)\n" \
+                              "This is the duration you want your insurance protection to last."
+                
+                # Send through WebSocket if available
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": next_question,
+                        "is_user": False
+                    }))
+                
+                return {
+                    "response": next_question,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True,
+                    "next_step": "get_years_coverage"
+                }
+                
+            except Exception as e:
+                error_msg = "Please enter a valid age (e.g., '20', '20 years', or 'twenty')."
+                logger.error(f"Error processing age input: {str(e)}", exc_info=True)
+                
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": error_msg,
+                        "is_user": False
+                    }))
+                
+                return {
+                    "response": error_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True
+                }
+                
+        elif current_step == "get_years_coverage":
+            try:
+                # Ensure message is a string
+                message_str = str(message).strip()
+                logger.info(f"Processing years of coverage input: {message_str}")
+                
+                # Extract number from input
+                word_to_num = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+                    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+                    'thirty': 30, 'forty': 40
+                }
+                
+                years_of_coverage = None
+                message_lower = message_str.lower()
+                
+                # Check for word numbers first
+                for word, num in word_to_num.items():
+                    if word in message_lower:
+                        years_of_coverage = num
+                        break
+                
+                # If no word number found, try to extract digits
+                if years_of_coverage is None:
+                    import re
+                    digits = re.search(r'\d+', message_str)
+                    if digits:
+                        years_of_coverage = int(digits.group())
+                    else:
+                        raise ValueError("No valid number found in years of coverage input")
+                
+                # Validate range
+                if years_of_coverage < 5 or years_of_coverage > 40:
+                    error_msg = "Please enter a term between 5 and 40 years."
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": error_msg,
+                            "is_user": False
+                        }))
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                
+                # Store years of coverage and move to next step
+                state["data"]["years_of_coverage"] = years_of_coverage
+                state["current_step"] = "calculate_premium"
+                
+                # Process the premium calculation
+                return await self.process_message(user_id, "", ws)
+                
+            except Exception as e:
+                error_msg = "Please enter a valid number of years (e.g., '20', '20 years', or 'twenty')."
+                logger.error(f"Error processing years of coverage: {str(e)}", exc_info=True)
+                
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": error_msg,
+                        "is_user": False
+                    }))
+                
+                return {
+                    "response": error_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True
+                }
+                
+        elif current_step == "calculate_premium":
+            try:
+                # Get the collected data
+                annual_income = state["data"].get("annual_income")
+                age = state["data"].get("age")
+                years_of_coverage = state["data"].get("years_of_coverage")
+                
+                if None in (annual_income, age, years_of_coverage):
+                    error_msg = "Missing required information. Let's start over with the premium estimation."
+                    if ws:
+                        await ws.send_text(json.dumps({
+                            "type": "message",
+                            "content": error_msg,
+                            "is_user": False
+                        }))
+                    state["current_step"] = "get_annual_income"
+                    return {
+                        "response": error_msg,
+                        "campaign_data": state["data"],
+                        "waiting_for_response": True
+                    }
+                
+                # Calculate premium
+                premium_details = calculate_premium_estimation(annual_income, years_of_coverage, age)
+                state["data"]["premium"] = premium_details
+                
+                # Format the response
+                response = (
+                    f"Based on your details:\n"
+                    f"• Annual Income: {format_currency(annual_income)}\n"
+                    f"• Age: {age} years\n"
+                    f"• Coverage Term: {years_of_coverage} years\n\n"
+                    f"Your estimated monthly premium is: *{format_currency(premium_details['monthly_premium'])}*\n"
+                    f"(Annual premium: {format_currency(premium_details['annual_premium'])})\n\n"
+                    "Would you like to speak with an agent to discuss this plan in more detail?"
+                )
+                
+                # Add buttons for user response
+                buttons = [
+                    {"label": "✅ Yes, contact me", "value": "yes"},
+                    {"label": "❌ No, thanks", "value": "no"}
+                ]
+                
+                # Send through WebSocket if available
+                if ws:
+                    # Send the response as a regular message
+                    await ws.send_json({
+                        "type": "message",
+                        "content": response,
+                        "is_user": False
+                    })
+                    # Send the agent question with buttons
+                    await ws.send_json({
+                        "type": "buttons",
+                        "text": "Would you like to speak with an agent?",
+                        "buttons": buttons
+                    })
+                
+                # Update the next step
+                state["current_step"] = "handle_agent_decision"
+                
+                return {
+                    "response": response,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True,
+                    "next_step": "handle_agent_decision"
+                }
+                
+            except Exception as e:
+                error_msg = "I encountered an error calculating your premium. Let's try that again."
+                logger.error(f"Error in calculate_premium: {str(e)}", exc_info=True)
+                
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": error_msg,
+                        "is_user": False
+                    }))
+                
+                # Reset to get annual income again
+                state["current_step"] = "get_annual_income"
+                return {
+                    "response": error_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True
+                }
+                
+            except Exception as e:
+                error_msg = "Please enter a valid number of years (e.g., '20', '20 years', or 'twenty')."
+                logger.error(f"Error processing years of coverage input: {str(e)}", exc_info=True)
+                
+                if ws:
+                    await ws.send_text(json.dumps({
+                        "type": "message",
+                        "content": error_msg,
+                        "is_user": False
+                    }))
+                
+                return {
+                    "response": error_msg,
+                    "campaign_data": state["data"],
+                    "waiting_for_response": True
+                }
+                        
+        elif current_step == "handle_agent_decision":
+            logger.info(f"[DEBUG] In handle_agent_decision, message: {message}")
+            logger.info(f"[DEBUG] message.lower() in ['yes', 'y', 'ya', 'yeah', 'yes_contact']: {message.lower() in ['yes', 'y', 'ya', 'yeah', 'yes_contact']}")
+            
+            if message.lower() in ['yes', 'y', 'ya', 'yeah', 'yes_contact']:
+                logger.info("[DEBUG] User wants to be contacted")
+                state["current_step"] = "complete"
+                response = {
+                    "response": "Great! Our agent will get in touch with you soon. For the meantime, we will send you an email with further details of our plan.",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+                logger.info(f"[DEBUG] Returning response: {response}")
+                return response
+            else:
+                state["current_step"] = "complete"
+                return {
+                    "response": "Thank you for using our premium estimator! If you have any questions in the future, feel free to reach out. Have a great day! 😊",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+            
+        elif current_step == "complete":
+            completion_msg = """
+🙏 Thank you for considering 'Satu Gaji, Satu Harapan'.
+Protecting your family's future is the greatest gift you can give."""
+            
+            await self.type_effect(completion_msg, ws)
+            
+            if ws:
+                return {
+                    "response": "Would you like to return to campaign selection? (yes/no)",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+            else:
+                return {
+                    "response": "💬 Would you like to return to campaign selection? (yes/no)",
+                    "campaign_data": state["data"],
+                    "completed": True
+                }
+        
+        # Default response if no step matches
+        return {
+            "response": "I'm not sure how to process that. Let's start over.",
+            "campaign_data": state["data"],
+            "completed": False
+        }
+    
+    def get_welcome_message(self) -> str:
+        return """
+🌟 Welcome to 'Satu Gaji Satu Harapan' Income Protection! 🌟
+
+Your income is your most valuable asset. This plan ensures you and your family are protected if you're unable to work due to illness or injury.
+
+With this plan, you can:
+• Replace your income if you can't work
+• Get financial support during recovery
+• Protect your family's future
+
+Would you like to know more about this plan?
+"""
+
+# Create a singleton instance
+satu_gaji_satu_harapan = SatuGajiSatuHarapan()
+
+# Alias for backward compatibility with main.py
+satu_gaji_satu_harapan_instance = satu_gaji_satu_harapan
+
+# For testing the campaign directly
+if __name__ == "__main__":
+    class MockWebSocket:
+        def __init__(self):
+            self.messages = []
+            
+        async def send_text(self, message: str):
+            self.messages.append(message)
+            print(f"Bot: {message}")
+    
+    async def test_campaign():
+        ws = MockWebSocket()
+        user_id = "test_user"
+        campaign = SatuGajiSatuHarapan()
+        
+        # Test welcome message
+        await campaign.process_message(user_id, "start", ws)
+        
+        # Simulate user responses
+        responses = [
+            "1",  # Start premium estimation
+            "50000",  # Annual income
+            "20",  # Years of coverage
+            "30",  # Age
+            "yes"  # Confirm details
+        ]
+        
+        for response in responses:
+            print(f"\nUser: {response}")
+            await campaign.process_message(user_id, response, ws)
+    
+    asyncio.run(test_campaign())

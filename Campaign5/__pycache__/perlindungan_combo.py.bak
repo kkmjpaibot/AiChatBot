@@ -1,0 +1,806 @@
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List, Tuple, Union
+import logging
+import json
+import asyncio
+from datetime import datetime  # Import datetime class directly
+from typing import Any, Dict, List, Optional, Tuple, Union
+import sys
+from pathlib import Path
+
+# Add parent directory to path to access main.py
+sys.path.append(str(Path(__file__).parent.parent))
+
+# Import active_conversations from main
+try:
+    from main import active_conversations
+except ImportError:
+    active_conversations = {}
+    logger = logging.getLogger(__name__)
+    logger.warning("Could not import active_conversations from main")
+
+logger = logging.getLogger(__name__)
+
+def format_currency(amount: float) -> str:
+    return f"RM {amount:,.2f}"
+
+@dataclass
+class CampaignState:
+    """State management for Perlindungan Combo campaign."""
+    current_step: str = "welcome"
+    user_data: Dict[str, Any] = field(default_factory=dict)
+    
+class PerlindunganComboCampaign:
+    """Main handler for Perlindungan Combo campaign."""
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if not hasattr(self, 'initialized') or not self.initialized:
+            self.states: Dict[str, CampaignState] = {}
+            self.last_active: Dict[str, float] = {}
+            self.name = "Perlindungan Combo"
+            self.description = "A comprehensive protection plan combining life, medical, and critical illness coverage"
+            self.initialized = True
+        
+    def get_state(self, user_id: str) -> CampaignState:
+        """Get or create state for a user."""
+        if user_id not in self.states:
+            self.states[user_id] = CampaignState()
+        self.last_active[user_id] = datetime.now().timestamp()
+        return self.states[user_id]
+
+    def calculate_combo_tier(self, age: int, package_tier: int) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+        """
+        Calculates premium based on a pre-defined package tier and age band.
+        
+        Returns:
+            tuple: (annual_premium, monthly_premium, error_message)
+        """
+        # Pre-defined ANNUAL premiums for each package tier and age band
+        package_bands = {
+            1: {  # Silver - Essential Protection
+                '18-30': 1200,
+                '31-40': 1800,
+                '41-50': 2700,
+                '51-60': 4000
+            },
+            2: {    # Gold - Balanced Protection
+                '18-30': 2000,
+                '31-40': 3000,
+                '41-50': 4500,
+                '51-60': 6500
+            },
+            3: { # Platinum - Comprehensive Protection
+                '18-30': 3000,
+                '31-40': 4500,
+                '41-50': 6500,
+                '51-60': 9500
+            }
+        }
+    
+        try:
+            # Get the package tier
+            if package_tier not in package_bands:
+                return None, None, "Invalid package tier. Please choose 1, 2, or 3."
+                
+            # Determine age band
+            if 18 <= age <= 30:
+                age_band = '18-30'
+            elif 31 <= age <= 40:
+                age_band = '31-40'
+            elif 41 <= age <= 50:
+                age_band = '41-50'
+            elif 51 <= age <= 60:
+                age_band = '51-60'
+            else:
+                return None, None, "Combo plans are typically for ages 18-60. Please consult our advisor for alternative options."
+            
+            # Get the annual premium for the chosen tier and age band
+            annual_premium = package_bands[package_tier][age_band]
+            monthly_premium = round(annual_premium / 12, 2)
+            
+            return annual_premium, monthly_premium, None
+            
+        except Exception as e:
+            logger.error(f"Error in calculate_combo_tier: {str(e)}", exc_info=True)
+            return None, None, f"An error occurred while calculating premium: {str(e)}"
+
+    async def send_message(self, message: str, ws: Any = None) -> str:
+        """Helper to send text through WebSocket if available."""
+        if not message or not isinstance(message, str):
+            logger.warning("Attempted to send empty or invalid message")
+            return ""
+            
+        logger.info(f"[PerlindunganCombo] Sending message: {message[:100]}{'...' if len(message) > 100 else ''}")
+        
+        if ws:
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "message",
+                    "content": message,
+                    "is_user": False
+                }))
+            except Exception as e:
+                logger.error(f"Error sending message: {str(e)}", exc_info=True)
+                
+        return message
+    
+    async def send_buttons(self, text: str, buttons: List[Dict[str, str]], ws: Any = None) -> str:
+        """Send buttons through WebSocket if available, fallback to text."""
+        if not text or not isinstance(text, str):
+            logger.warning("Attempted to send buttons with empty or invalid message")
+            text = "Please select an option:"
+            
+        if not buttons or not isinstance(buttons, list):
+            logger.warning("No valid buttons provided, sending as text")
+            return await self.send_message(text, ws)
+            
+        logger.info(f"[PerlindunganCombo] Sending buttons: {text[:100]}{'...' if len(text) > 100 else ''}")
+        
+        if ws:
+            try:
+                # Validate buttons
+                valid_buttons = []
+                for btn in buttons:
+                    if not isinstance(btn, dict) or 'label' not in btn or 'value' not in btn:
+                        logger.warning(f"Skipping invalid button: {btn}")
+                        continue
+                    valid_buttons.append({
+                        'label': str(btn['label']),
+                        'value': str(btn['value'])
+                    })
+                
+                if not valid_buttons:
+                    logger.warning("No valid buttons to send")
+                    return await self.send_message(text, ws)
+                
+                # Send the message with buttons
+                await ws.send_text(json.dumps({
+                    "type": "buttons",
+                    "content": text,
+                    "buttons": valid_buttons,
+                    "is_user": False
+                }))
+                
+                return text
+                
+            except Exception as e:
+                logger.error(f"Error sending buttons: {str(e)}", exc_info=True)
+                # Fallback to text if buttons fail
+                fallback = f"{text}\n" + "\n".join(f"{i+1}. {btn.get('label', 'Option')}" 
+                    for i, btn in enumerate(valid_buttons) if isinstance(btn, dict))
+                return await self.send_message(fallback, ws)
+                
+        # If no WebSocket, return text version
+        return f"{text}\n" + "\n".join(f"{i+1}. {btn.get('label', 'Option')}" 
+            for i, btn in enumerate(buttons) if isinstance(btn, dict))
+
+    def _get_welcome_response(self) -> Dict[str, Any]:
+        """Helper method to get welcome message and buttons."""
+        welcome_msg = self.get_welcome_message()
+        return {
+            "type": "buttons",
+            "message": welcome_msg,
+            "response": welcome_msg,
+            "content": welcome_msg,
+            "text": welcome_msg,
+            "buttons": [
+                {"label": "✅ Yes, tell me more", "value": "learn_more"},
+                {"label": "❌ Not now, thanks", "value": "no"}
+            ],
+            "is_user": False,
+            "timestamp": datetime.now().isoformat(),
+            "campaign_data": {},
+            "next_step": "welcome_response"
+        }
+        
+    def _get_plan_explanation_response(self) -> Dict[str, Any]:
+        """Helper method to get plan explanation and next steps."""
+        explanation = self.get_plan_explanation()
+        return {
+            "type": "buttons",
+            "message": explanation,
+            "response": explanation,
+            "content": explanation,
+            "text": explanation,
+            "buttons": [
+                {"label": "✅ Get an estimate", "value": "get_estimate"},
+                {"label": "❌ Maybe later", "value": "no"}
+            ],
+            "is_user": False,
+            "timestamp": datetime.now().isoformat(),
+            "campaign_data": {},
+            "next_step": "after_explanation"
+        }
+    
+    def _get_plan_estimate_message(self, age: int, package_tier: int) -> Tuple[str, float, float, str]:
+        """Generate the plan estimate message and return it along with premium details."""
+        package_names = {
+            1: "Silver - Essential Protection",
+            2: "Gold - Balanced Protection",
+            3: "Platinum - Comprehensive Protection"
+        }
+        
+        coverage_details = {
+            1: "~RM 300k Life, ~RM 200k CI, RM 500k Medical",
+            2: "~RM 500k Life, ~RM 300k CI, RM 1m Medical",
+            3: "~RM 1m Life, ~RM 500k CI, RM 2m Medical"
+        }
+        
+        # Calculate premium
+        annual_premium, monthly_premium, error = self.calculate_combo_tier(age, package_tier)
+        if error:
+            raise ValueError(error)
+        
+        # Build the response message
+        response_msg = (
+            f"🔍 *Your Combo Plan Estimate*\n"
+            f"• Package: {package_names.get(package_tier, 'Unknown')}\n"
+            f"• Age: {age} years old\n"
+            f"• Annual Premium: RM {annual_premium:,.2f}\n"
+            f"• Monthly Premium: RM {monthly_premium:,.2f}\n\n"
+            f"Includes: {coverage_details.get(package_tier, '')}\n\n"
+            "💡 This is a rough estimate. Your final premium depends on your health assessment and exact coverage amounts.\n\n"
+            "Would you like our agent to contact you for a more detailed discussion about your protection needs?"
+        )
+        
+        # Add note for age limits
+        if age < 18 or age > 60:
+            response_msg += "\n\n⚠️ **Note:** Combo plans are typically for ages 18-60. "
+            response_msg += "Our advisor will explain all available options for you."
+            
+        return response_msg, annual_premium, monthly_premium, package_names.get(package_tier, 'Unknown')
+
+    async def process_message(self, user_id: str, message: Union[str, dict], ws: Any = None, user_data: Optional[Dict[str, Any]] = None) -> dict:
+        """Process incoming message and return response.
+        
+        Args:
+            user_id: Unique identifier for the user
+            message: The message from the user, can be string or dict
+            ws: Optional WebSocket connection for sending messages
+            user_data: Optional dictionary containing user data from main conversation
+            
+        Returns:
+            dict: Response containing message and next steps
+        """
+        logger.info(f"[PerlindunganCombo] Processing message: {message}")
+        
+        # Get or create state for this user
+        state = self.get_state(user_id)
+        
+        # Update state with user data if provided
+        if user_data:
+            state.user_data.update(user_data)
+        
+        # Log the current state and message
+        logger.info(f"[PerlindunganCombo] Current step: {state.current_step}")
+        logger.info(f"[PerlindunganCombo] User data: {state.user_data}")
+        
+        # Handle welcome message
+        if state.current_step == "welcome" or (isinstance(message, str) and message.lower() == 'start'):
+            logger.info("Sending welcome message")
+            welcome_msg = self.get_welcome_message()
+            
+            # Store that we've shown the welcome message
+            state.current_step = "after_welcome"
+            
+            # Return the welcome message with buttons
+            return {
+                "type": "buttons",
+                "response": welcome_msg,
+                "content": welcome_msg,
+                "buttons": [
+                    {"label": "Learn More", "value": "learn_more"},
+                    {"label": "Not Now", "value": "not_now"}
+                ],
+                "campaign_data": state.user_data,
+                "next_step": "after_welcome"
+            }
+        
+        # Handle main menu navigation
+        if isinstance(message, str) and message == 'main_menu':
+            logger.info("Handling 'main_menu' navigation")
+            # Reset the conversation state
+            self.states[user_id] = CampaignState()
+            # Return to main menu
+            return {
+                "type": "end_conversation",
+                "response": "Returning to main menu...",
+                "content": "Returning to main menu...",
+                "campaign_data": {},
+                "next_step": "end_conversation"
+            }
+            
+        # Handle restart
+        if isinstance(message, str) and message.lower() == "restart":
+            self.states[user_id] = CampaignState()
+            state = self.get_state(user_id)
+            return await self.process_message(user_id, "start", ws, user_data)
+            
+        # Handle after welcome state
+        if state.current_step == "after_welcome":
+            # Normalize message for comparison
+            normalized_msg = message.lower() if isinstance(message, str) else ''
+            if normalized_msg == "learn_more" or any(word in normalized_msg for word in ['yes', 'y', 'ya', 'yeah', 'get_estimate']):
+                # Update state first
+                state.current_step = "after_explanation"
+                logger.info(f"User {user_id} wants to learn more, showing plan explanation")
+                
+                # Return the explanation with next steps
+                explanation_response = self._get_plan_explanation_response()
+                logger.info(f"Sending plan explanation: {explanation_response}")
+                
+                # Add a button to get an estimate
+                explanation_response["buttons"] = [
+                    {"label": "Get Estimate", "value": "get_estimate"},
+                    {"label": "Not Now", "value": "not_now"}
+                ]
+                return explanation_response
+                
+            elif normalized_msg == "not_now" or any(word in normalized_msg for word in ['no', 'n', 'not now', 'later']):
+                state.current_step = "end_conversation"
+                response_msg = "Understood. If you have any questions about our protection plans in the future, feel free to ask."
+                
+                if ws:
+                    await self.send_message(response_msg, ws)
+                
+                return {
+                    "type": "message",
+                    "response": response_msg,
+                    "content": response_msg,
+                    "campaign_data": state.user_data,
+                    "next_step": "end_conversation"
+                }
+                    
+        # Handle after explanation state
+        if state.current_step == "after_explanation":
+            # Normalize message for comparison
+            normalized_msg = message.lower() if isinstance(message, str) else ''
+            if normalized_msg in ['get_estimate', 'yes', 'y', 'ya', 'yeah']:
+                logger.info(f"[DEBUG] Getting estimate for user {user_id}")
+                logger.info(f"[DEBUG] User data: {state.user_data}")
+                
+                # First check if age is already in state.user_data
+                if 'age' in state.user_data and state.user_data['age']:
+                    try:
+                        age = int(state.user_data['age'])
+                        if 18 <= age <= 120:
+                            state.current_step = "get_package"
+                            buttons = [
+                                {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                                {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                                {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                            ]
+                            return {
+                                "type": "buttons",
+                                "response": f"Great! I see you are {age} years old.\n\nPlease select a protection package:",
+                                "content": f"Great! I see you are {age} years old.\n\nPlease select a protection package:",
+                                "buttons": buttons,
+                                "campaign_data": state.user_data,
+                                "next_step": "get_package"
+                            }
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid age format in state.user_data: {e}")
+                
+                # Fallback to checking user_data parameter
+                if user_data and 'age' in user_data and user_data['age']:
+                    try:
+                        age = int(user_data['age'])
+                        if 18 <= age <= 120:
+                            state.current_step = "get_package"
+                            state.user_data["age"] = age
+                            buttons = [
+                                {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                                {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                                {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                            ]
+                            return {
+                                "type": "buttons",
+                                "response": f"Great! I see you are {age} years old.\n\nPlease select a protection package:",
+                                "content": f"Great! I see you are {age} years old.\n\nPlease select a protection package:",
+                                "buttons": buttons,
+                                "campaign_data": state.user_data,
+                                "next_step": "get_package"
+                            }
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid age format in user_data: {e}")
+                
+                # Fallback to checking main conversation state (legacy support)
+                try:
+                    from main import active_conversations
+                    for conv_state in active_conversations.values():
+                        if hasattr(conv_state, 'user_data') and 'age' in conv_state.user_data:
+                            age = conv_state.user_data['age']
+                            # Convert age to int if it's a string
+                            if isinstance(age, str):
+                                try:
+                                    age = int(age)
+                                except (ValueError, TypeError):
+                                    continue
+                            if isinstance(age, (int, float)) and 18 <= age <= 120:
+                                state.current_step = "get_package"
+                                state.user_data["age"] = int(age)
+                                buttons = [
+                                    {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                                    {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                                    {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                                ]
+                                return {
+                                    "type": "buttons",
+                                    "response": f"Great! I see you are {int(age)} years old.\n\nPlease select a protection package:",
+                                    "content": f"Great! I see you are {int(age)} years old.\n\nPlease select a protection package:",
+                                    "buttons": buttons,
+                                    "campaign_data": state.user_data,
+                                    "next_step": "get_package"
+                                }
+                except Exception as e:
+                    logger.warning(f"Couldn't access main conversation state: {e}")
+                
+                # If we still don't have an age, ask for it
+                state.current_step = "get_age"
+                return {
+                    "type": "message",
+                    "response": "Great! Let's get a rough estimate of your protection needs.\n\nWhat is your age?",
+                    "content": "Great! Let's get a rough estimate of your protection needs.\n\nWhat is your age?",
+                    "campaign_data": state.user_data,
+                    "next_step": "get_age"
+                }
+                    
+            elif state.current_step == "get_age":
+                try:
+                    # First try to get age from the provided user_data
+                    if user_data and 'age' in user_data and user_data['age']:
+                        try:
+                            age = int(user_data['age'])
+                            if 0 <= age <= 120:
+                                state.user_data["age"] = age
+                                state.current_step = "get_package"
+                                buttons = [
+                                    {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                                    {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                                    {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                                ]
+                                return {
+                                    "type": "message",
+                                    "response": f"Thank you! I see you are {age} years old.\n\nPlease select a protection package:",
+                                    "content": f"Thank you! I see you are {age} years old.\n\nPlease select a protection package:",
+                                    "buttons": buttons,
+                                    "campaign_data": state.user_data,
+                                    "next_step": "get_package"
+                                }
+                        except (ValueError, TypeError):
+                            pass  # Invalid age format, fall through to manual input
+                    
+                    # Fallback to checking main conversation state (legacy support)
+                    try:
+                        from main import active_conversations
+                        for conv_state in active_conversations.values():
+                            if hasattr(conv_state, 'user_data') and 'age' in conv_state.user_data:
+                                age = conv_state.user_data['age']
+                                # Convert age to int if it's a string
+                                if isinstance(age, str):
+                                    try:
+                                        age = int(age)
+                                    except (ValueError, TypeError):
+                                        continue
+                                if isinstance(age, (int, float)) and 0 <= age <= 120:
+                                    age = int(age)
+                                    state.user_data["age"] = age
+                                    state.current_step = "get_package"
+                                    buttons = [
+                                        {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                                        {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                                        {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                                    ]
+                                    return {
+                                        "type": "message",
+                                        "response": f"Thank you! I see you are {age} years old.\n\nPlease select a protection package:",
+                                        "content": f"Thank you! I see you are {age} years old.\n\nPlease select a protection package:",
+                                        "buttons": buttons,
+                                        "campaign_data": state.user_data,
+                                        "next_step": "get_package"
+                                    }
+                    except Exception as e:
+                        logger.warning(f"Couldn't access main conversation state: {e}")
+                    
+                    # Fallback to getting age from user input
+                    try:
+                        age = int(message_content.strip())
+                        if age < 0 or age > 120:
+                            raise ValueError("Age must be between 0 and 120")
+                        
+                        state.user_data["age"] = age
+                        state.current_step = "get_package"
+                        
+                        # Prepare package selection message
+                        buttons = [
+                            {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                            {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                            {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                        ]
+                        
+                        return {
+                            "type": "message",
+                            "response": f"Thank you! You are {age} years old.\n\nWhich protection package are you interested in?",
+                            "content": f"Thank you! You are {age} years old.\n\nWhich protection package are you interested in?",
+                            "buttons": buttons,
+                            "campaign_data": state.user_data,
+                            "next_step": "get_package"
+                        }
+                    except ValueError as ve:
+                        return {
+                            "type": "message",
+                            "response": "Please enter a valid age between 0 and 120.",
+                            "content": "Please enter a valid age between 0 and 120.",
+                            "campaign_data": state.user_data,
+                            "next_step": "get_age"
+                        }
+                    
+                except ValueError as e:
+                    # Error message is already handled in the main age validation
+                    raise
+                    
+            elif state.current_step == "get_package":
+                try:
+                    # Define package options
+                    packages = [
+                        {"label": "1️⃣ Silver - Essential Protection", "value": "1"},
+                        {"label": "2️⃣ Gold - Balanced Protection", "value": "2"},
+                        {"label": "3️⃣ Platinum - Comprehensive Protection", "value": "3"}
+                    ]
+                    
+                    # If we're just entering this step, show the package options
+                    if not message_content.strip().isdigit():
+                        response_msg = "Please select a protection package:"
+                        return {
+                            "type": "buttons",
+                            "response": response_msg,
+                            "content": response_msg,
+                            "buttons": packages,
+                            "campaign_data": state.user_data,
+                            "next_step": "get_package"
+                        }
+                        
+                    # Process package selection
+                    package_choice = int(message_content.strip())
+                    if package_choice not in [1, 2, 3]:
+                        # Show the package options again if invalid choice
+                        response_msg = "Please select a valid package (1, 2, or 3):"
+                        return {
+                            "type": "buttons",
+                            "response": response_msg,
+                            "content": response_msg,
+                            "buttons": packages,
+                            "campaign_data": state.user_data,
+                            "next_step": "get_package"
+                        }
+                        
+                    state.user_data["package_choice"] = package_choice
+                    state.current_step = "show_estimate"
+                    
+                    # Get age with default to 30 if not set
+                    age = state.user_data.get("age", 30)
+                    
+                    # Calculate premium
+                    annual_premium, monthly_premium, error = self.calculate_combo_tier(age, package_choice)
+                    
+                    if error:
+                        error_msg = f"I couldn't calculate the premium: {error}"
+                        logger.error(error_msg)
+                        return {
+                            "type": "message",
+                            "response": error_msg,
+                            "content": error_msg,
+                            "campaign_data": state.user_data,
+                            "next_step": "get_package"
+                        }
+                    
+                    # Generate plan estimate message
+                    try:
+                        response_msg, annual_premium, monthly_premium, package_name = self._get_plan_estimate_message(age, package_choice)
+                        
+                        return {
+                            "type": "message",
+                            "response": response_msg,
+                            "content": response_msg,
+                            "buttons": [
+                                {"label": "✅ Yes, contact me", "value": "yes"},
+                                {"label": "❌ No, thanks", "value": "no"}
+                            ],
+                            "campaign_data": state.user_data,
+                            "next_step": "follow_up_quote"
+                        }
+                    except Exception as e:
+                        error_msg = "I'm sorry, I encountered an error while generating your quote. Please try again."
+                        logger.error(f"{error_msg}: {str(e)}", exc_info=True)
+                        return {
+                            "type": "message",
+                            "response": error_msg,
+                            "content": error_msg,
+                            "campaign_data": state.user_data,
+                            "next_step": "get_package"
+                        }
+                    
+                except ValueError as e:
+                    response_msg = "Please choose a valid package (1, 2, or 3)."
+                    return {
+                        "type": "message",
+                        "response": response_msg,
+                        "content": response_msg,
+                        "buttons": packages,
+                        "campaign_data": state.user_data,
+                        "next_step": "get_package"
+                    }
+                    
+            elif state.current_step == "show_estimate":
+                # This state is no longer needed as we handle the estimate in get_package
+                # Just transition to follow_up_quote
+                state.current_step = "follow_up_quote"
+                return await self.process_message(user_id, "", ws)
+                      
+            elif state.current_step == "follow_up_quote":
+                package_name = state.user_data.get('package_name', 'selected package')
+                
+                # Define common response components
+                navigation_buttons = [
+                    {"label": "🏠 Return to Main Menu", "value": "main_menu"},
+                    {"label": "📋 See Other Plans", "value": "other_plans"},
+                    {"label": "🔄 Start Over", "value": "restart"}
+                ]
+                
+                # Normalize message for comparison
+                normalized_msg = message_content.lower() if isinstance(message_content, str) else ''
+                
+                # Check if the message contains any 'yes' indicators
+                if any(word in normalized_msg for word in ['yes', 'y', 'ya', 'yeah', 'contact']):
+                    # User wants to be contacted
+                    response_msg = f"Our agent will contact you soon. You should receive an email with information regarding your {package_name} plan."
+                    
+                    # Reset the conversation
+                    self.states[user_id] = CampaignState()
+                    
+                    # Return a special response that the main app will handle
+                    return {
+                        "type": "campaign_selection",
+                        "response": response_msg,
+                        "content": response_msg,
+                        "campaign_data": {},
+                        "next_step": "end_conversation",
+                        "return_to_campaign_select": True,
+                        "buttons": navigation_buttons
+                    }
+                
+                # Only show the 'thank you' message if they explicitly said 'no'
+                if normalized_msg in ['no', 'n', 'no thanks']:
+                    response_msg = (
+                        "Thank you for using our service. If you have any questions about our protection plans in the future, "
+                        "feel free to ask. Stay protected!"
+                    )
+                else:
+                    # For any other input, assume they want to be contacted
+                    response_msg = f"Our agent will contact you soon. You should receive an email with information regarding your {package_name} plan."
+                    self.states[user_id] = CampaignState()
+                
+                # Return to campaign selection with navigation options
+                return {
+                    "type": "campaign_selection",
+                    "response": response_msg + "\n\nWhat would you like to do next?",
+                    "content": response_msg + "\n\nWhat would you like to do next?",
+                    "campaign_data": {},
+                    "next_step": "end_conversation",
+                    "return_to_campaign_select": True,
+                    "buttons": navigation_buttons
+                }
+            
+            # Default response for any unhandled state
+            response_msg = "I'm not sure how to proceed. Let's start over."
+            state.current_step = "welcome"
+            
+            return {
+                "type": "message",
+                "response": response_msg,
+                "content": response_msg,
+                "campaign_data": state.user_data,
+                "next_step": "welcome"
+            }
+                
+        except Exception as e:
+            # Log the full error with traceback for debugging
+            logger.error(f"Error in process_message for user {user_id}: {str(e)}", exc_info=True)
+            
+            # Reset state to a clean slate
+            if user_id in self.states:
+                del self.states[user_id]
+            
+            # Create a new clean state
+            state = self.get_state(user_id)
+            response_msg = "I'm sorry, I encountered an error. Let's start over."
+            
+            return {
+                "type": "message",
+                "response": response_msg,
+                "content": response_msg,
+                "campaign_data": {},
+                "next_step": "welcome"
+            }
+    
+    def get_welcome_message(self) -> str:
+        """Return the welcome message for this campaign."""
+        return """*Welcome to Perlindungan Combo*
+
+Your complete protection solution in one plan.
+
+Perlindungan Combo combines life insurance, critical illness coverage, medical protection, and accident coverage into one simple package.
+
+Would you like to learn more about how Perlindungan Combo can protect you and your family?"""
+        
+     def get_initial_message(self, user_id: str) -> dict:
+        """Get the initial welcome message with buttons."""
+        welcome_msg = self.get_welcome_message()
+        return {
+            "type": "buttons",
+            "message": welcome_msg,
+            "content": welcome_msg,
+            "text": welcome_msg,
+            "buttons": [
+                {"label": "✅ Yes, tell me more", "value": "learn_more"},
+                {"label": "❌ Not now, thanks", "value": "no"}
+            ],
+            "is_user": False,
+            "timestamp": datetime.now().isoformat(),
+            "campaign_data": {},
+            "next_step": "welcome_response"
+        }
+    
+     def get_plan_explanation(self) -> str:
+        """Return the explanation of the combo protection plan."""
+        return (
+            "💎 *Benefits of Combo Protection:*\n\n"
+            "• **All-in-one coverage:** Life, Medical, Critical Illness, Accident\n"
+            "• **Single premium payment** - simpler to manage\n"
+            "• **Better value** than buying separate policies\n"
+            "• **No coverage gaps** - complete protection\n"
+            "• **Guaranteed insurability** for all coverage types\n\n"
+            "Would you like to get a quick estimate of your premium based on your age and desired coverage?"
+        )
+
+
+# Create a singleton instance
+perlindungan_combo_campaign = PerlindunganComboCampaign()
+
+# Alias for backward compatibility with main.py
+perlindungan_combo_campaign_instance = perlindungan_combo_campaign
+
+
+# For testing the campaign directly
+if __name__ == "__main__":
+    import asyncio
+    
+    async def test_campaign():
+        """Test the campaign directly."""
+        campaign = perlindungan_combo_campaign
+        print(f"Testing campaign: {campaign.name}")
+        print(f"Description: {campaign.description}")
+        
+        # Test welcome message
+        welcome = campaign.get_welcome_message()
+        print("\nWelcome message:")
+        print(welcome)
+        
+        # Test plan explanation
+        explanation = campaign.get_plan_explanation()
+        print("\nPlan explanation:")
+        print(explanation)
+        
+        # Test process_message
+        print("\nTesting process_message:")
+        response = await campaign.process_message("test_user", "start")
+        print(f"Response: {response}")
+    
+    asyncio.run(test_campaign())

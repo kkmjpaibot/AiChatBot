@@ -6,8 +6,8 @@ const reconnectDelay = 3000; // 3 seconds
 
 function connectWebSocket() {
     try {
-        // Always use ws:// for local development
-        const protocol = 'ws://';
+        // Use wss:// for HTTPS, ws:// for HTTP
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
 
         // Function to get the correct path for an image
         function getImagePath(filename) {

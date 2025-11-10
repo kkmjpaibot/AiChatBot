@@ -41,8 +41,8 @@ function connectWebSocket() {
             };
         };
 
-        const host = window.location.hostname;
-        const wsUrl = `${protocol}${host}:8000/ws`;
+        const host = window.location.host;
+        const wsUrl = `${protocol}${host}/ws`;
         console.log('Attempting to connect to WebSocket at', wsUrl);
         ws = new WebSocket(wsUrl);
 

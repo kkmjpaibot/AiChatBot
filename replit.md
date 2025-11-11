@@ -11,13 +11,19 @@ This is an AI-powered insurance sales chatbot application built with FastAPI and
 
 ## Current State
 - ✅ FastAPI backend running on port 5000
-- ✅ WebSocket-based real-time chat interface
+- ✅ WebSocket-based real-time chat interface (wss:// for HTTPS)
 - ✅ Multiple insurance campaign modules (5 campaigns)
 - ✅ NLP processing for intent detection
-- ✅ Google Sheets integration for data collection
+- ✅ Google Sheets integration (Replit-managed connection)
 - ✅ Multi-agent selection (Erica, Daniel, Paivi)
 
 ## Recent Changes
+**Date: November 11, 2025**
+- ✅ Connected Google Sheets using Replit integration
+- ✅ Updated Google_Sheet.py to use Replit-managed OAuth authentication
+- ✅ Fixed WebSocket protocol to automatically detect HTTP/HTTPS (ws:// or wss://)
+- ✅ Updated script.js version to force browser cache refresh
+
 **Date: November 10, 2025**
 - Installed Python 3.11 and required dependencies
 - Fixed WebSocket connection to use dynamic port (removed hardcoded port 8000)
@@ -30,7 +36,7 @@ This is an AI-powered insurance sales chatbot application built with FastAPI and
 
 ### Backend (FastAPI)
 - **main.py**: Main FastAPI application with WebSocket endpoint
-- **Google_Sheet.py**: Integration with Google Sheets API for data storage
+- **Google_Sheet.py**: Integration with Google Sheets API using Replit OAuth
 - **nlp_processor.py**: NLP intent detection using transformers
 
 ### Campaign Modules
@@ -42,7 +48,7 @@ This is an AI-powered insurance sales chatbot application built with FastAPI and
 
 ### Frontend
 - **templates/index.html**: Main chat interface
-- **static/script.js**: WebSocket client and UI logic
+- **static/script.js**: WebSocket client with automatic protocol detection
 - **static/style-new.css**: Styling
 - **static/**: Images and assets
 
@@ -57,15 +63,22 @@ Key packages:
 - pandas, numpy, scikit-learn
 
 ## Environment Variables
-- `GOOGLE_SERVICE_ACCOUNT_FILE`: Path to Google service account credentials (default: credential.json)
-- `GOOGLE_SHEET_ID`: Google Sheets spreadsheet ID
+- `GOOGLE_SHEET_ID`: Google Sheets spreadsheet ID (default: 109fc5EkBwdHc4pZYEzYMTqknxw0ImGGiI3kgmIo95Vc)
 - `GOOGLE_SHEET_NAME`: Sheet name (default: Sheet1)
+- Replit automatically manages OAuth credentials for Google Sheets
 
 ## Running the Application
 The application runs automatically via the configured workflow:
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 5000
 ```
+
+## Google Sheets Integration
+The application uses Replit's managed Google Sheets integration:
+- Authentication is handled automatically via Replit OAuth
+- No service account file needed
+- Access tokens are refreshed automatically
+- User data is saved to the configured spreadsheet after each conversation
 
 ## Deployment
 Configured for Replit Autoscale deployment:
@@ -79,10 +92,11 @@ Configured for Replit Autoscale deployment:
 3. Provides basic information (name, age, etc.)
 4. Receives personalized insurance plan recommendations
 5. Explores campaign details and premium estimates
-6. Data is saved to Google Sheets for follow-up
+6. Data is automatically saved to Google Sheets for follow-up
 
 ## Notes
 - The application uses WebSocket for real-time bidirectional communication
+- WebSocket automatically uses wss:// for HTTPS and ws:// for HTTP
 - Port 5000 is required for Replit web preview
 - Campaign modules are dynamically loaded at runtime
-- Google Sheets credentials must be configured for data persistence
+- Google Sheets connection is managed by Replit (no manual credential setup needed)

@@ -24,7 +24,7 @@ if not logger.hasHandlers():
 class ConversationState:
     def __init__(self):
         self.step: str = "get_name"  # Current step in the conversation flow
-        self.user_data: dict[str, str] = {}  # User-specific data
+        self.user_data: dict[str, Any] = {}  # User-specific data
         self.active_campaign: str | None = None  # Currently active campaign ID
         self.campaign_state: Any = None  # Campaign-specific state object
 

@@ -196,7 +196,15 @@ function connectWebSocket() {
                     if (msg.content || msg.text || msg.message) {
                         const textDiv = document.createElement('div');
                         const messageText = msg.content || msg.text || msg.message;
-                        let formattedContent = messageText
+                        // Escape HTML first to prevent XSS
+                        const escaped = messageText
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#039;');
+                        // Then apply markdown formatting
+                        let formattedContent = escaped
                             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                             .replace(/\*(.*?)\*/g, '<em>$1</em>')
                             .replace(/\n/g, '<br>');
@@ -263,7 +271,15 @@ function connectWebSocket() {
                 else if (msg.type !== 'buttons') {
                     const textDiv = document.createElement('div');
                     const content = msg.content || msg.message || msg.text || event.data;
-                    let formattedContent = content
+                    // Escape HTML first to prevent XSS
+                    const escaped = content
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#039;');
+                    // Then apply markdown formatting
+                    let formattedContent = escaped
                         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                         .replace(/\*(.*?)\*/g, '<em>$1</em>')
                         .replace(/\n/g, '<br>');

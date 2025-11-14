@@ -1277,7 +1277,11 @@ async def handle_websocket_connection(ws: WebSocket, conv_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    port = 8000
+    import os
+
+    port = int(os.environ.get("PORT", 8000))  # <— Replit will inject the correct port
+
     print(f"Starting server on port {port}...")
     print(f"WebSocket URL: ws://localhost:{port}/ws")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
